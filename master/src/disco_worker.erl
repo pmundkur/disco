@@ -37,7 +37,8 @@ init({Master, Task}) ->
     erlang:monitor(process, Task#task.from),
     WorkerPid = self(),
     spawn(fun () ->
-                  WorkerPid ! {work, make_jobhome(Task#task.jobname, Master)}
+              JobHome = disco_worker_util:make_jobhome(Task#task.jobname, Master),
+              WorkerPid ! {work, JobHome}
           end),
     {ok,
      #state{master = Master,
@@ -81,7 +82,7 @@ handle_event({event, {<<"ERR">>, _Time, _Tags, Message}}, State) ->
 handle_event({event, {<<"JOB">>, _Time, _Tags, _Message}},
              #state{task = Task} = State) ->
     event({<<"JOB">>, "Job file requested"}, State),
-    JobHome = jobhome(Task#task.jobname),
+    JobHome = disco_worker_util:jobhome(Task#task.jobname),
     worker_send("JOB", list_to_binary(jobpack:jobfile(JobHome)), State),
     {noreply, State};
 
@@ -214,73 +215,12 @@ terminate(_Reason, State) ->
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
-jobhome(JobName) ->
-    disco:jobhome(JobName, disco_node:home()).
-
-make_jobhome(JobName, Master) ->
-    JobHome = jobhome(JobName),
-    case jobpack:extracted(JobHome) of
-        true -> JobHome;
-        false -> make_jobhome(JobName, JobHome, Master)
-    end.
-make_jobhome(JobName, JobHome, Master) ->
-    JobAtom = list_to_atom(disco:hexhash(JobName)),
-    case catch register(JobAtom, self()) of
-        true ->
-            disco:make_dir(JobHome),
-            JobPack = disco_server:get_worker_jobpack(Master, JobName),
-            jobpack:save(JobPack, JobHome),
-            jobpack:extract(JobPack, JobHome),
-            JobHome;
-        _Else ->
-            wait_for_jobhome(JobAtom, JobName, Master)
-    end.
-wait_for_jobhome(JobAtom, JobName, Master) ->
-    case whereis(JobAtom) of
-        undefined ->
-            make_jobhome(JobName, Master);
-        JobProc ->
-            process_flag(trap_exit, true),
-            link(JobProc),
-            receive
-                {'EXIT', noproc} ->
-                    make_jobhome(JobName, Master);
-                {'EXIT', JobProc, normal} ->
-                    make_jobhome(JobName, Master)
-            end
-    end.
-
-results_filename(Task) ->
-    TimeStamp = timer:now_diff(now(), {0,0,0}),
-    FileName = io_lib:format("~s-~B-~B.results", [Task#task.mode,
-                                                  Task#task.taskid,
-                                                  TimeStamp]),
-    filename:join(".disco", FileName).
-
-url_path(Task, Host, LocalFile) ->
-    LocationPrefix = disco:joburl(Host, Task#task.jobname),
-    filename:join(LocationPrefix, LocalFile).
-
-local_results(Task, FileName) ->
-    Host = disco:host(node()),
-    Output = io_lib:format("dir://~s/~s",
-                           [Host, url_path(Task, Host, FileName)]),
-    list_to_binary(Output).
-
 results(#state{output_filename = none, persisted_outputs = Outputs}) ->
     {none, Outputs};
-results(#state{output_filename = FileName, task = Task,
+results(#state{output_filename = FileName,
+               task = Task,
                persisted_outputs = Outputs}) ->
-    {local_results(Task, FileName), Outputs}.
-
-format_output_line(S, [LocalFile, Type]) ->
-    format_output_line(S, [LocalFile, Type, <<"0">>]);
-format_output_line(#state{task = Task},
-                   [BLocalFile, Type, Label]) ->
-    Host = disco:host(node()),
-    LocalFile = binary_to_list(BLocalFile),
-    io_lib:format("~s ~s://~s/~s\n",
-                  [Label, Type, Host, url_path(Task, Host, LocalFile)]).
+    {disco_worker_util:local_results(Task, FileName), Outputs}.
 
 -spec add_output(list(), #state{}) -> #state{}.
 add_output([Tag, <<"tag">>], S) ->
@@ -289,15 +229,16 @@ add_output([Tag, <<"tag">>], S) ->
     S#state{persisted_outputs = Outputs};
 
 add_output(RL, #state{task = Task, output_file = none} = S) ->
-    ResultsFileName = results_filename(Task),
-    Path = filename:join(jobhome(Task#task.jobname), ResultsFileName),
+    ResultsFileName = disco_worker_util:results_filename(Task),
+    Path = filename:join(disco_worker_util:jobhome(Task#task.jobname),
+                         ResultsFileName),
     ok = filelib:ensure_dir(Path),
     {ok, ResultsFile} = prim_file:open(Path, [write, raw]),
     add_output(RL, S#state{output_filename = ResultsFileName,
                            output_file = ResultsFile});
 
-add_output(RL, #state{output_file = RF} = S) ->
-    prim_file:write(RF, format_output_line(S, RL)),
+add_output(RL, #state{output_file = RF, task = Task} = S) ->
+    prim_file:write(RF, disco_worker_util:format_output_line(Task, RL)),
     S.
 
 -spec close_output(#state{}) -> 'ok'.
