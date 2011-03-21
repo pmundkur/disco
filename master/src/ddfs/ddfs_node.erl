@@ -83,118 +83,34 @@ init({GetEnabled, PutEnabled}) ->
                 putq = http_queue:new(PutMax, ?HTTP_QUEUE_LENGTH),
                 getq = http_queue:new(GetMax, ?HTTP_QUEUE_LENGTH)}}.
 
-handle_call(get_tags, _, #state{tags = Tags} = S) ->
-    {reply, gb_trees:keys(Tags), S};
+handle_call(get_tags, _, S) ->
+    {reply, do_get_tags(S), S};
 
-handle_call(get_vols, _, #state{vols = Vols, root = Root} = S) ->
-    {reply, {Vols, Root}, S};
+handle_call(get_vols, _, S) ->
+    {reply, do_get_vols(S), S};
 
-handle_call(get_blob, {Pid, _Ref} = From, #state{getq = Q} = S) ->
-    Reply = fun() -> gen_server:reply(From, ok) end,
-    case http_queue:add({Pid, Reply}, Q) of
-        full ->
-            {reply, full, S};
-        {_, NewQ} ->
-            erlang:monitor(process, Pid),
-            {noreply, S#state{getq = NewQ}}
-    end;
+handle_call(get_blob, From, S) ->
+    do_get_blob(From, S);
 
-handle_call(get_diskspace, _From, #state{vols = Vols} = S) ->
-    {reply, lists:foldl(fun ({{Free, Used}, _VolName}, {TotalFree, TotalUsed}) ->
-                                {TotalFree + Free, TotalUsed + Used}
-                        end, {0, 0}, Vols), S};
+handle_call(get_diskspace, _From, S) ->
+    {reply, do_get_diskspace(S), S};
 
-handle_call({put_blob, BlobName}, {Pid, _Ref} = From, #state{putq = Q} = S) ->
-    Reply = fun() ->
-                    {_Space, VolName} = choose_vol(S#state.vols),
-                    {ok, Local, Url} = ddfs_util:hashdir(list_to_binary(BlobName),
-                                                         disco:host(node()),
-                                                         "blob",
-                                                         S#state.root,
-                                                         VolName),
-                    case ddfs_util:ensure_dir(Local) of
-                        ok ->
-                            gen_server:reply(From, {ok, Local, Url});
-                        {error, E} ->
-                            gen_server:reply(From, {error, Local, E})
-                    end
-            end,
-    case http_queue:add({Pid, Reply}, Q) of
-        full ->
-            {reply, full, S};
-        {_, NewQ} ->
-            erlang:monitor(process, Pid),
-            {noreply, S#state{putq = NewQ}}
-    end;
+handle_call({put_blob, BlobName}, From, S) ->
+    do_put_blob(BlobName, From, S);
 
 handle_call({get_tag_timestamp, TagName}, _From, S) ->
-    case gb_trees:lookup(TagName, S#state.tags) of
-        none ->
-            {reply, notfound, S};
-        {value, {_Time, _VolName} = TagNfo} ->
-            {reply, {ok, TagNfo}, S}
-    end;
+    {reply, do_get_tag_timestamp(TagName, S), S};
 
 handle_call({get_tag_data, Tag, {_Time, VolName}}, From, State) ->
-    spawn(fun() ->
-                  {ok, TagDir, _Url} = ddfs_util:hashdir(Tag,
-                                                         disco:host(node()),
-                                                         "tag",
-                                                         State#state.root,
-                                                         VolName),
-                  TagPath = filename:join(TagDir, binary_to_list(Tag)),
-                  case prim_file:read_file(TagPath) of
-                      {ok, Binary} ->
-                          gen_server:reply(From, {ok, Binary});
-                      {error, Reason} ->
-                          error_logger:warning_report({"Read failed", TagPath, Reason}),
-                          gen_server:reply(From, {error, read_failed})
-                  end
-          end),
+    spawn(fun() -> do_get_tag_data(Tag, VolName, From, State) end),
     {noreply, State};
 
 handle_call({put_tag_data, {Tag, Data}}, _From, S) ->
-    {_Space, VolName} = choose_vol(S#state.vols),
-    {ok, Local, _} = ddfs_util:hashdir(Tag,
-                                       disco:host(node()),
-                                       "tag",
-                                       S#state.root,
-                                       VolName),
-    case ddfs_util:ensure_dir(Local) of
-        ok ->
-            Filename = filename:join(Local, ["!partial.", binary_to_list(Tag)]),
-            {reply, case prim_file:write_file(Filename, Data) of
-                        ok ->
-                            {ok, VolName};
-                        {error, _} = E ->
-                            E
-                    end, S};
-        E ->
-            {reply, E, S}
-    end;
+    {reply, do_put_tag_data(Tag, Data, S), S};
 
 handle_call({put_tag_commit, Tag, TagVol}, _, S) ->
-    {value, {_, VolName}} = lists:keysearch(node(), 1, TagVol),
-    {ok, Local, Url} = ddfs_util:hashdir(Tag,
-                                         disco:host(node()),
-                                         "tag",
-                                         S#state.root,
-                                         VolName),
-    {TagName, Time} = ddfs_util:unpack_objname(Tag),
-
-    TagL = binary_to_list(Tag),
-    Src = filename:join(Local, ["!partial.", TagL]),
-    Dst = filename:join(Local,  TagL),
-    case ddfs_util:safe_rename(Src, Dst) of
-        ok ->
-            {reply,
-             {ok, Url},
-             S#state{tags = gb_trees:enter(TagName,
-                                           {Time, VolName},
-                                           S#state.tags)}};
-        {error, _} = E ->
-            {reply, E, S}
-    end.
+    {Reply, S1} = do_put_tag_commit(Tag, TagVol, S),
+    {reply, Reply, S1}.
 
 handle_cast({update_vols, NewVols}, #state{vols = Vols} = S) ->
     {noreply, S#state{vols = lists:ukeymerge(2, NewVols, Vols)}};
@@ -216,6 +132,118 @@ terminate(_Reason, _State) ->
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
+
+%% ===================================================================
+%% internal functions
+
+do_get_tags(#state{tags = Tags}) ->
+    gb_trees:keys(Tags).
+
+do_get_vols(#state{vols = Vols, root = Root}) ->
+    {Vols, Root}.
+
+do_get_blob({Pid, _Ref} = From, #state{getq = Q} = S) ->
+    Reply = fun() -> gen_server:reply(From, ok) end,
+    case http_queue:add({Pid, Reply}, Q) of
+        full ->
+            {reply, full, S};
+        {_, NewQ} ->
+            erlang:monitor(process, Pid),
+            {noreply, S#state{getq = NewQ}}
+    end.
+
+do_get_diskspace(#state{vols = Vols}) ->
+    lists:foldl(fun ({{Free, Used}, _VolName}, {TotalFree, TotalUsed}) ->
+                        {TotalFree + Free, TotalUsed + Used}
+                end, {0, 0}, Vols).
+
+do_put_blob(BlobName, {Pid, _Ref} = From, #state{putq = Q} = S) ->
+    Reply = fun() ->
+                    {_Space, VolName} = choose_vol(S#state.vols),
+                    {ok, Local, Url} = ddfs_util:hashdir(list_to_binary(BlobName),
+                                                         disco:host(node()),
+                                                         "blob",
+                                                         S#state.root,
+                                                         VolName),
+                    case ddfs_util:ensure_dir(Local) of
+                        ok ->
+                            gen_server:reply(From, {ok, Local, Url});
+                        {error, E} ->
+                            gen_server:reply(From, {error, Local, E})
+                    end
+            end,
+    case http_queue:add({Pid, Reply}, Q) of
+        full ->
+            {reply, full, S};
+        {_, NewQ} ->
+            erlang:monitor(process, Pid),
+            {noreply, S#state{putq = NewQ}}
+    end.
+
+do_get_tag_timestamp(TagName, S) ->
+    case gb_trees:lookup(TagName, S#state.tags) of
+        none ->
+            notfound;
+        {value, {_Time, _VolName} = TagNfo} ->
+            {ok, TagNfo}
+    end.
+
+do_get_tag_data(Tag, VolName, From, S) ->
+    {ok, TagDir, _Url} = ddfs_util:hashdir(Tag,
+                                           disco:host(node()),
+                                           "tag",
+                                           S#state.root,
+                                           VolName),
+    TagPath = filename:join(TagDir, binary_to_list(Tag)),
+    case prim_file:read_file(TagPath) of
+        {ok, Binary} ->
+            gen_server:reply(From, {ok, Binary});
+        {error, Reason} ->
+            error_logger:warning_report({"Read failed", TagPath, Reason}),
+            gen_server:reply(From, {error, read_failed})
+    end.
+
+do_put_tag_data(Tag, Data, S) ->
+    {_Space, VolName} = choose_vol(S#state.vols),
+    {ok, Local, _} = ddfs_util:hashdir(Tag,
+                                       disco:host(node()),
+                                       "tag",
+                                       S#state.root,
+                                       VolName),
+    case ddfs_util:ensure_dir(Local) of
+        ok ->
+            Filename = filename:join(Local, ["!partial.", binary_to_list(Tag)]),
+            case prim_file:write_file(Filename, Data) of
+                ok ->
+                    {ok, VolName};
+                {error, _} = E ->
+                    E
+            end;
+        E ->
+            E
+    end.
+
+do_put_tag_commit(Tag, TagVol, S) ->
+    {value, {_, VolName}} = lists:keysearch(node(), 1, TagVol),
+    {ok, Local, Url} = ddfs_util:hashdir(Tag,
+                                         disco:host(node()),
+                                         "tag",
+                                         S#state.root,
+                                         VolName),
+    {TagName, Time} = ddfs_util:unpack_objname(Tag),
+
+    TagL = binary_to_list(Tag),
+    Src = filename:join(Local, ["!partial.", TagL]),
+    Dst = filename:join(Local,  TagL),
+    case ddfs_util:safe_rename(Src, Dst) of
+        ok ->
+            {{ok, Url},
+             S#state{tags = gb_trees:enter(TagName,
+                                           {Time, VolName},
+                                           S#state.tags)}};
+        {error, _} = E ->
+            {E, S}
+    end.
 
 -spec init_vols(nonempty_string(), [nonempty_string(),...]) ->
     {'ok', [{diskinfo(), nonempty_string()},...]}.
