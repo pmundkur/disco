@@ -8,13 +8,18 @@
 -export([start/2, serve_ddfs_file/2, serve_disco_file/2]).
 
 start(MochiConfig, Roots) ->
-    mochiweb_http:start([
-        {name, ddfs_get},
-        {max, ?HTTP_MAX_CONNS},
-        {loop, fun(Req) ->
-                    loop(Req:get(raw_path), Req, Roots)
-                end}
-        | MochiConfig]).
+    case whereis(ddfs_get) of
+        undefined ->
+            error_logger:info_report({"Starting ddfs_get at", self()}),
+            mochiweb_http:start([{name, ddfs_get},
+                                 {max, ?HTTP_MAX_CONNS},
+                                 {loop, fun(Req) ->
+                                            loop(Req:get(raw_path), Req, Roots)
+                                        end}
+                                 | MochiConfig]);
+        Pid ->
+            error_logger:info_report({"ddfs_get already running at", Pid})
+    end.
 
 -spec serve_ddfs_file(nonempty_string(), module()) -> _.
 serve_ddfs_file(Path, Req) ->

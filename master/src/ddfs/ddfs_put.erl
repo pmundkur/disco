@@ -11,14 +11,18 @@
 -define(MAX_RECV_BODY, (1024*1024*1024*1024)).
 
 start(MochiConfig) ->
-    error_logger:info_report({"START PID", self()}),
-    mochiweb_http:start([
-        {name, ddfs_put},
-        {max, ?HTTP_MAX_CONNS},
-        {loop, fun(Req) ->
-                    loop(Req:get(path), Req)
-                end}
-        | MochiConfig]).
+    case whereis(ddfs_put) of
+        undefined ->
+            error_logger:info_report({"Starting ddfs_put at", self()}),
+            mochiweb_http:start([{name, ddfs_put},
+                                 {max, ?HTTP_MAX_CONNS},
+                                 {loop, fun(Req) ->
+                                            loop(Req:get(path), Req)
+                                        end}
+                                 | MochiConfig]);
+        Pid ->
+            error_logger:info_report({"ddfs_put already running at", Pid})
+    end.
 
 -spec loop(nonempty_string(), module()) -> _.
 loop("/proxy/" ++ Path, Req) ->
