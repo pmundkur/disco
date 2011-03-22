@@ -14,10 +14,12 @@
 % Diskinfo is {FreeSpace, UsedSpace}.
 -type diskinfo() :: {non_neg_integer(), non_neg_integer()}.
 -record(state, {root :: nonempty_string(),
-                vols :: [{diskinfo(), nonempty_string()},...],
+                initproc :: 'undefined' | pid(),
+                vols :: 'undefined' | [{diskinfo(), nonempty_string()},...],
+                reqq :: [_],
                 putq :: http_queue:q(),
                 getq :: http_queue:q(),
-                tags :: gb_tree()}).
+                tags :: 'undefined' | gb_tree()}).
 
 is_master() ->
     case net_adm:names() of
@@ -49,39 +51,33 @@ start_link(Config) ->
             exit(Reason)
     end.
 
-init({GetEnabled, PutEnabled}) ->
-    DDFSRoot = disco:get_setting("DDFS_ROOT"),
-    DiscoRoot = disco:get_setting("DISCO_DATA"),
-    PutMax = list_to_integer(disco:get_setting("DDFS_PUT_MAX")),
-    GetMax = list_to_integer(disco:get_setting("DDFS_GET_MAX")),
-    PutPort = list_to_integer(disco:get_setting("DDFS_PUT_PORT")),
-    GetPort = list_to_integer(disco:get_setting("DISCO_PORT")),
-
+async_init(DDFSNode, DDFSRoot, GetEnabled, PutEnabled) ->
     {ok, Vols} = find_vols(DDFSRoot),
     {ok, Tags} = find_tags(DDFSRoot, Vols),
+    gen_server:cast(DDFSNode, {init_done, DDFSRoot, Vols, Tags, GetEnabled, PutEnabled}).
 
-    if
-        PutEnabled ->
-            {ok, _PutPid} = ddfs_put:start([{port, PutPort}]);
-        true ->
-            ok
-    end,
-    if
-        GetEnabled ->
-            {ok, _GetPid} = ddfs_get:start([{port, GetPort}],
-                                           {DDFSRoot, DiscoRoot});
-        true ->
-            ok
-    end,
-
-    spawn_link(fun() -> refresh_tags(DDFSRoot, Vols) end),
-    spawn_link(fun() -> monitor_diskspace(DDFSRoot, Vols) end),
-
+init({GetEnabled, PutEnabled}) ->
+    DDFSRoot = disco:get_setting("DDFS_ROOT"),
+    PutMax = list_to_integer(disco:get_setting("DDFS_PUT_MAX")),
+    GetMax = list_to_integer(disco:get_setting("DDFS_GET_MAX")),
+    Self = self(),
+    InitProc = spawn_link(fun() ->
+                              async_init(Self, DDFSRoot, GetEnabled, PutEnabled)
+                          end),
     {ok, #state{root = DDFSRoot,
-                vols = Vols,
-                tags = Tags,
+                initproc = InitProc,
+                vols = undefined,
+                tags = undefined,
+                reqq = [],
                 putq = http_queue:new(PutMax, ?HTTP_QUEUE_LENGTH),
                 getq = http_queue:new(GetMax, ?HTTP_QUEUE_LENGTH)}}.
+
+% Queue up calls until initialization is complete.
+handle_call(Req, From, #state{vols = undefined, reqq = ReqQ} = S) ->
+    {noreply, S#state{reqq = [{Req, From} | ReqQ]}};
+
+% NOTE: If you add a _call_ below, ensure that you handle it in
+% dispatch_pending_request() as well.
 
 handle_call(get_tags, _, S) ->
     {reply, do_get_tags(S), S};
@@ -101,9 +97,9 @@ handle_call({put_blob, BlobName}, From, S) ->
 handle_call({get_tag_timestamp, TagName}, _From, S) ->
     {reply, do_get_tag_timestamp(TagName, S), S};
 
-handle_call({get_tag_data, Tag, {_Time, VolName}}, From, State) ->
-    spawn(fun() -> do_get_tag_data(Tag, VolName, From, State) end),
-    {noreply, State};
+handle_call({get_tag_data, Tag, {_Time, VolName}}, From, S) ->
+    spawn(fun() -> do_get_tag_data(Tag, VolName, From, S) end),
+    {noreply, S};
 
 handle_call({put_tag_data, {Tag, Data}}, _From, S) ->
     {reply, do_put_tag_data(Tag, Data, S), S};
@@ -112,11 +108,26 @@ handle_call({put_tag_commit, Tag, TagVol}, _, S) ->
     {Reply, S1} = do_put_tag_commit(Tag, TagVol, S),
     {reply, Reply, S1}.
 
+
+handle_cast({init_done, DDFSRoot, Vols, Tags, GetEnabled, PutEnabled}, S) ->
+    {noreply, do_init_done(DDFSRoot, Vols, Tags, GetEnabled, PutEnabled, S)};
+
+% Ignore other casts received during initialization.
+handle_cast(_Req, #state{vols = undefined} = S) ->
+    {noreply, S};
+
 handle_cast({update_vols, NewVols}, #state{vols = Vols} = S) ->
     {noreply, S#state{vols = lists:ukeymerge(2, NewVols, Vols)}};
 
 handle_cast({update_tags, Tags}, S) ->
     {noreply, S#state{tags = Tags}}.
+
+handle_info({'EXIT', From, Reason}, #state{initproc = From} = S) ->
+    error_logger:error_report({"ddfs_node init failed!", Reason}),
+    {stop, init_failed, S};
+
+handle_info({'EXIT', From, Reason}, S) ->
+    {noreply, S};
 
 handle_info({'DOWN', _, _, Pid, _}, #state{putq = PutQ, getq = GetQ} = S) ->
     % We don't know if Pid refers to a put or get request.
@@ -135,6 +146,30 @@ code_change(_OldVsn, State, _Extra) ->
 
 %% ===================================================================
 %% internal functions
+
+do_init_done(DDFSRoot, Vols, Tags, GetEnabled, PutEnabled, S) ->
+    DiscoRoot = disco:get_setting("DISCO_DATA"),
+    PutPort = list_to_integer(disco:get_setting("DDFS_PUT_PORT")),
+    GetPort = list_to_integer(disco:get_setting("DISCO_PORT")),
+
+    if
+        GetEnabled ->
+            {ok, _GetPid} = ddfs_get:start([{port, GetPort}],
+                                           {DDFSRoot, DiscoRoot});
+        true ->
+            ok
+    end,
+    if
+        PutEnabled ->
+            {ok, _PutPid} = ddfs_put:start([{port, PutPort}]);
+        true ->
+            ok
+    end,
+
+    spawn_link(fun() -> refresh_tags(DDFSRoot, Vols) end),
+    spawn_link(fun() -> monitor_diskspace(DDFSRoot, Vols) end),
+
+    dispatch_pending(S#state{vols = Vols, tags = Tags, initproc = undefined}).
 
 do_get_tags(#state{tags = Tags}) ->
     gb_trees:keys(Tags).
@@ -244,6 +279,51 @@ do_put_tag_commit(Tag, TagVol, S) ->
         {error, _} = E ->
             {E, S}
     end.
+
+dispatch_pending(#state{reqq = []} = S) ->
+    S;
+dispatch_pending(#state{reqq = [{Req, From} | Rest]} = S) ->
+    S1 = dispatch_pending_request(Req, From, S),
+    dispatch_pending(S1#state{reqq = Rest}).
+
+dispatch_pending_request(get_tags, From, S) ->
+    gen_server:reply(From, do_get_tags(S)),
+    S;
+dispatch_pending_request(get_vols, From, S) ->
+    gen_server:reply(From, do_get_vols(S)),
+    S;
+dispatch_pending_request(get_blob, From, S) ->
+    case do_get_blob(From, S) of
+        {reply, Reply, S1} ->
+            gen_server:reply(From, Reply),
+            S1;
+        {noreply, S1} ->
+            S1
+    end;
+dispatch_pending_request(get_diskspace, From, S) ->
+    gen_server:reply(From, do_get_diskspace(S)),
+    S;
+dispatch_pending_request({put_blob, BlobName}, From, S) ->
+    case do_put_blob(BlobName, From, S) of
+        {reply, Reply, S1} ->
+            gen_server:reply(From, Reply),
+            S1;
+        {noreply, S1} ->
+            S1
+    end;
+dispatch_pending_request({get_tag_timestamp, TagName}, From, S) ->
+    gen_server:reply(From, do_get_tag_timestamp(TagName, S)),
+    S;
+dispatch_pending_request({get_tag_data, Tag, {_Time, VolName}}, From, S) ->
+    spawn(fun() -> do_get_tag_data(Tag, VolName, From, S) end),
+    S;
+dispatch_pending_request({put_tag_data, {Tag, Data}}, From, S) ->
+    gen_server:reply(From, do_put_tag_data(Tag, Data, S)),
+    S;
+dispatch_pending_request({put_tag_commit, Tag, TagVol}, From, S) ->
+    {Reply, S1} = do_put_tag_commit(Tag, TagVol, S),
+    gen_server:reply(From, Reply),
+    S1.
 
 -spec init_vols(nonempty_string(), [nonempty_string(),...]) ->
     {'ok', [{diskinfo(), nonempty_string()},...]}.
