@@ -89,8 +89,11 @@ is_master(Host) ->
     case rpc:call(node(), net_adm, names, [Host], ?RPC_CALL_TIMEOUT) of
         {ok, Names} ->
             Master = string:sub_word(atom_to_list(node()), 1, $@),
-            lists:keymember(Master, 1, Names);
+            Ret = lists:keymember(Master, 1, Names),
+            error_logger:info_report({"node_mon: master status for", Host, Ret}),
+            Ret;
         {error, address} ->
+            error_logger:info_report({"node_mon: net_adm:names error for", Host}),
             % no epmd running, can't be master
             false;
         R ->
