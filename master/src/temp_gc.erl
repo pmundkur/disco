@@ -20,16 +20,22 @@ start_link(Master) ->
 loop() ->
     case catch {get_purged(), get_jobs()} of
         {{ok, Purged}, {ok, Jobs}} ->
-            case prim_file:list_dir(disco:data_root(node())) of
+            DataRoot = disco:data_root(node()),
+            case prim_file:list_dir(DataRoot) of
                 {ok, Dirs} ->
                     Active = gb_sets:from_list(
                         [Name || {Name, active, _Start, _Pid} <- Jobs]),
-                    process_dir(Dirs, gb_sets:from_ordset(Purged), Active);
-                _ ->
+                    GCAfter = list_to_integer(disco:get_setting("DISCO_GC_AFTER")),
+                    error_logger:warning_report({"temp_gc: starting", DataRoot, GCAfter}),
+                    process_dir(Dirs, gb_sets:from_ordset(Purged), Active),
+                    error_logger:warning_report({"temp_gc: done"});
+                Other ->
+                    error_logger:warning_report({"temp_gc: ignoring DataRoot listing", DataRoot, Other}),
                     % fresh install, try again after GC_INTERVAL
                     ok
             end;
-        _ ->
+        Other ->
+            error_logger:warning_report({"temp_gc: ignoring unexpected master response", Other}),
             % master busy, try again after GC_INTERVAL
             ok
     end,
@@ -59,6 +65,7 @@ get_jobs() ->
 process_dir([], _Purged, _Active) -> ok;
 process_dir([Dir|R], Purged, Active) ->
     Path = disco:data_path(node(), Dir),
+    error_logger:warning_report({"temp_gc: processing", Path}),
     {ok, Jobs} = prim_file:list_dir(Path),
     _ = [process_job(filename:join(Path, Job), Purged) ||
             Job <- Jobs, ifdead(Job, Active)],
@@ -79,11 +86,15 @@ process_job(JobPath, Purged) ->
             GCAfter = list_to_integer(disco:get_setting("DISCO_GC_AFTER")),
             if IsPurged; Now - T > GCAfter ->
                 ddfs_delete(disco:oob_name(Job)),
+                error_logger:warning_report({"temp_gc: cleaning jobdir", JobPath}),
                 _ = os:cmd("rm -Rf " ++ JobPath),
                 ok;
             true ->
+                error_logger:warning_report({"temp_gc: skipping unpurged/recent job", JobPath,
+                                             IsPurged, Now - T, GCAfter}),
                 ok
             end;
-        _ ->
+        Err ->
+            error_logger:warning_report({"temp_gc: error processing jobdir", JobPath, Err}),
             ok
     end.
