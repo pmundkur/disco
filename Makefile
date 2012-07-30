@@ -80,10 +80,11 @@ clean:
 	@ (cd master && ./rebar clean)
 	- rm -Rf lib/build lib/disco.egg-info
 
-test: master
-	@ (cd master && ./rebar -C eunit.config get-deps)
-	erlc -o $(ETEST) $(ETEST)/*.erl
-	erl -noshell -pa $(ETEST) -pa $(EBIN) -pa $(EDEP)/proper -pa $(EDEP)/mochiweb/ebin -s master_tests main -s init stop
+xref: master
+	@ (cd master && ./rebar xref)
+
+test:
+	@ (cd master && ./rebar -C eunit.config get-deps eunit)
 
 contrib:
 	git submodule init
