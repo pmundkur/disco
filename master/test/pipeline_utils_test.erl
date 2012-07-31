@@ -1,6 +1,7 @@
 -module(pipeline_utils_test).
 
 -include_lib("proper/include/proper.hrl").
+-include_lib("eunit/include/eunit.hrl").
 
 -include("common_types.hrl").
 -include("disco.hrl").
@@ -29,11 +30,16 @@ pg_next_stage(G, V) ->
 
 prop_next_stage() ->
     ?FORALL(Pipeline, pipeline(),
-            ?FORALL(Stage, proper:union(pipeline_utils:stages(Pipeline)),
+            ?FORALL(Stage, union(pipeline_utils:stages(Pipeline)),
                     begin
                         PG = pipe_graph(Pipeline),
-                        pipeline_utils:next_stage(Pipeline, Stage) =:= pg_next_stage(PG, Stage)
+                        pipeline_utils:next_stage(Pipeline, Stage)
+                            =:= pg_next_stage(PG, Stage)
                     end)).
 
-prop_test() ->
-    proper:quickcheck(prop_next_stage()).
+do_test() ->
+    EunitLeader = erlang:group_leader(),
+    erlang:group_leader(whereis(user), self()),
+    Res = proper:module(?MODULE),
+    erlang:group_leader(EunitLeader, self()),
+    ?_assertEqual([], Res).
