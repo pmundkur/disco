@@ -1,9 +1,7 @@
 -module(json_validator_test).
+-export([validate_test/0]).
 
--export([validatetest/0]).
-
-% Temporarily disable this since eunit cannot find mochijson2.
-validatetest() ->
+validate_test() ->
     Tests = [{null, "null"},
              {integer, "1"},
              {integer, "-1"},
