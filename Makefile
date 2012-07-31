@@ -84,7 +84,7 @@ xref: master
 	@ (cd master && ./rebar xref)
 
 test:
-	@ (cd master && ./rebar -C eunit.config get-deps)
+	@ (cd master && ./rebar -C eunit.config get-deps compile)
 	@ (cd master && ./rebar -C eunit.config skip_deps=true eunit)
 
 contrib:
