@@ -1,7 +1,8 @@
 -module(ddfs_tag_test).
--export([check_token_test/0]).
+-compile(export_all).
 
 -include_lib("proper/include/proper.hrl").
+-include_lib("eunit/include/eunit.hrl").
 
 % Workaround for Issue 161.
 safe_binary() ->
@@ -34,7 +35,7 @@ tag_encode_decode(T) ->
     T =:= Decoded.
 
 % Sanity check the tag encoding and decoding.
-encode_decode_check() ->
+prop_encode_decode() ->
     ?FORALL(T, tagcontent(), tag_encode_decode(T)).
 
 % Ensure that tag date returned as a result of API calls contain the
@@ -46,7 +47,7 @@ token_check(T) ->
     (false =:= lists:keyfind(<<"read-token">>, 1, J))
         andalso (false =:= lists:keyfind(<<"write-token">>, 1, J)).
 
-api_token_check() ->
+prop_token_api() ->
     % This does not really need to be a FORALL, just a single instance
     % would do.  It would be nice for triq to support this.  Using
     % eunit here causes two problems:
@@ -55,9 +56,12 @@ api_token_check() ->
     %      generator for an eunit test.
     ?FORALL(T, tagcontent(), token_check(T)).
 
-prop_test() ->
-    proper:quickcheck(api_token_check()),
-    proper:quickcheck(encode_decode_check()).
+do_prop_test() ->
+    EunitLeader = erlang:group_leader(),
+    erlang:group_leader(whereis(user), self()),
+    Res = proper:module(?MODULE),
+    erlang:group_leader(EunitLeader, self()),
+    ?_assertEqual([], Res).
 
 % Non-property tests.
 
