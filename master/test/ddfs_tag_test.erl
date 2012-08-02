@@ -61,7 +61,7 @@ do_prop_test() ->
     erlang:group_leader(whereis(user), self()),
     Res = proper:module(?MODULE),
     erlang:group_leader(EunitLeader, self()),
-    ?_assertEqual([], Res).
+    ?assertEqual([], Res).
 
 % Non-property tests.
 
