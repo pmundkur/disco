@@ -99,7 +99,7 @@ group_outputs(split, Outputs) ->
             || {Tid, Tout} <- Outputs,
                {Outid, {dir, {H, _U, Labels}} = D} <- Tout,
                Labels =/= [],
-               {L, _Sz} <- unique_labels(Labels)],
+               L <- unique_labels(Labels)],
     Dats = [{{L, pick_local_host(Reps)}, [{{Tid, Outid}, D}]}
             || {Tid, Tout} <- Outputs,
                {Outid, {data, {L, _S, Reps}} = D} <- Tout,
@@ -134,7 +134,7 @@ group_outputs(join_label, Outputs) ->
             || {Tid, Tout} <- Outputs,
                {Outid, {dir, {_H, _U, Labels}} = D} <- Tout,
                Labels =/= [],
-               {L, _Sz} <- unique_labels(Labels)],
+               L <- unique_labels(Labels)],
     Dats = [{L, {{Tid, Outid}, D}}
             || {Tid, Tout} <- Outputs,
                {Outid, {data, {L, _S, Reps}} = D} <- Tout,
@@ -166,8 +166,8 @@ group_outputs(join_all, Outputs) ->
     [{{0, none}, Dirs ++ Dats}].  % '0', 'none' indicate no assigned host or label.
 
 -spec input_urls(data_input(), label_grouping(), group()) -> [url()].
-input_urls({data, {_L, _Sz, Reps}}, _LG, _G) ->
-    [U || {U, _H} <- Reps];
+input_urls({data, {L, _Sz, Reps}}, _LG, _G) ->
+    labelled_urls([U || {U, _H} <- Reps], L, [{L, 0}]);
 input_urls({dir, {_H1, U, LS}}, split, {L, _H2}) ->
     labelled_urls([U], L, LS);
 input_urls({dir, {_H1, U, LS}}, join_node_label, {L, _H2}) ->
