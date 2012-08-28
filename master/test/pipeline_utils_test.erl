@@ -77,7 +77,7 @@ have_label(L, [{_Iid, {dir, {_H, _U, LS}}} | Rest]) ->
     lists:member(L, [LL || {LL, _Sz} <- LS]) andalso have_label(L, Rest).
 
 prop_group_labels() ->
-    ?FORALL({LG, TOs}, {union([join_label, join_node_label]),
+    ?FORALL({LG, TOs}, {union([group_label, group_node_label]),
                         [{task_id(), [task_output()]}]},
             begin
                 GOs = pipeline_utils:group_outputs(LG, TOs),
@@ -93,7 +93,7 @@ on_node(H, [{_Iid, {dir, {OH, _U, _Ls}}} | Rest]) ->
     H =:= OH andalso on_node(H, Rest).
 
 prop_group_nodes() ->
-    ?FORALL({LG, TOs}, {union([join_node, join_node_label]),
+    ?FORALL({LG, TOs}, {union([group_node, group_node_label]),
                         [{task_id(), [task_output()]}]},
             begin
                 GOs = pipeline_utils:group_outputs(LG, TOs),
@@ -102,10 +102,10 @@ prop_group_nodes() ->
 
 % When joining all, ensure all useful inputs are present in output.
 
-prop_join_all() ->
+prop_group_all() ->
     ?FORALL(TOs, [{task_id(), [task_output()]}],
             begin
-                [{{0, none}, Os}] = pipeline_utils:group_outputs(join_all, TOs),
+                [{{0, none}, Os}] = pipeline_utils:group_outputs(group_all, TOs),
                 UOs = [{{Tid, Outid}, O} || {Tid, Tout} <- TOs,
                                             {Outid, O} <- Tout,
                                             useful_input(O)],
