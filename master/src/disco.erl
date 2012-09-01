@@ -2,7 +2,7 @@
 
 -export([get_setting/1, has_setting/1, settings/0]).
 -export([host/1, name/1, slave_name/1, slave_node/1, slave_safe/1]).
--export([jobhome/1, jobhome/2, joburl/2]).
+-export([jobhome/1, jobhome/2, joburl/2, joburl_to_localpath/1]).
 -export([data_root/1, data_path/2, ddfs_root/2]).
 -export([local_cluster/0, preferred_host/1, disco_url_path/1]).
 -export([enum/1, hexhash/1, oob_name/1, debug_flags/1]).
@@ -114,6 +114,12 @@ jobhome(JobName, Root) ->
 -spec joburl(host(), jobname()) -> path().
 joburl(Host, JobName) ->
     filename:join(["disco", Host, hexhash(JobName), JobName]).
+
+-spec joburl_to_localpath(url()) -> path().
+joburl_to_localpath(Url) ->
+    {_S, _H, Path, _Q, _F} = mochiweb_util:urlsplit(binary_to_list(Url)),
+    ["/", "disco" | P] = filename:split(Path),
+    filename:join([get_setting("DISCO_DATA") | P]).
 
 -spec data_root(node() | nonempty_string()) -> path().
 data_root(Node) when is_atom(Node) ->

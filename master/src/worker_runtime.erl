@@ -1,6 +1,8 @@
 -module(worker_runtime).
 -export([init/2, handle/2, get_pid/1]).
 
+-export([save_locals_to_ddfs/1]).
+
 -include("common_types.hrl").
 -include("disco.hrl").
 -include("pipeline.hrl").
@@ -298,3 +300,66 @@ results(#state{jobname = JobName,
                remote_outputs = ROutputs}) ->
     disco:enum([local_results(JobName, Host, FileName, Labels)
                 | [{data, RO} || RO <- ROutputs]]).
+
+
+-spec save_locals_to_ddfs(state()) -> {ok, [data_spec()]} | {error, term()}.
+save_locals_to_ddfs(#state{output_filename = none}) ->
+    {ok, []};
+save_locals_to_ddfs(#state{jobname = JN, output_filename = FileName} = S) ->
+    IndexFile = filename:join(disco_worker:jobhome(JN), FileName),
+    case prim_file:read_file(IndexFile) of
+        {ok, Index} ->
+            Locals =
+                try {ok, parse_index(Index)}
+                catch
+                    Err ->
+                        error_logger:warning_msg("Error parsing ~s: ~p",
+                                                 [IndexFile, Err]),
+                        {error, Err};
+                    K:V ->
+                        error_logger:warning_msg("Error parsing ~s: ~p:~p",
+                                                 [IndexFile, K, V]),
+                        {error, bad_index_file}
+                end,
+            case Locals of
+                {ok, L}         -> save_locals(L, S);
+                {error, _} = E1 -> E1
+            end;
+        {error, _} = E2 ->
+            E2
+    end.
+
+-spec parse_index(binary()) -> [[binary()]].
+parse_index(<<"">>) ->
+    [];
+parse_index(Index) ->
+    {match, Lines} = re:run(Index,
+                            "(.*?) (.*?) (.*?)\n",
+                            [global, {capture, all_but_first, binary}]),
+    [{list_to_integer(binary_to_list(L)),
+      Url,
+      list_to_integer(binary_to_list(Sz))}
+     || [L, Url, Sz] <- Lines].
+
+save_locals(Locals, #state{master = M, task = T} = _S) ->
+    {#task_spec{taskid = TaskId}, #task_run{runid = RunId}} = T,
+    K = list_to_integer(disco:get_setting("DDFS_BLOB_REPLICAS")),
+    % Use a loop instead of a comprehension to avoid excessive
+    % parallel requests.
+    lists:foldl(
+      fun({L, Url, Sz}, Acc) ->
+              LocalPath = disco:joburl_to_localpath(Url),
+              % Since this task can be re-run, name blob replicas such
+              % that collisions across re-runs of the same task are
+              % avoided.  Unused replicas will not be in the final
+              % tag, and hence will be garbage collected.
+              Blob = disco:format("~s.~p.~p",
+                                  [filename:basename(LocalPath), TaskId, RunId]),
+              % TODO: Optimize new_blob to handle hints so that local
+              % blob copies can be created.
+              {ok, Urls} = ddfs_master:new_blob({ddfs_master, M}, K, []),
+              % TODO: actually perform the save.
+              error_logger:info_msg("Replicating ~s from ~p to ~p",
+                                    [Blob, LocalPath, Urls]),
+              [{L, Url, Sz} | Acc]
+      end, [], Locals).
