@@ -8,6 +8,7 @@ This module defines objects for interfacing with
 """
 import os, time
 
+from disco.compat import basestring
 from disco import dPickle
 from disco.util import hexhash
 
@@ -62,7 +63,7 @@ class Task(object):
         self.host = host
         self.jobfile = jobfile
         self.jobname = jobname
-        self.jobpack = JobPack.load(open(jobfile))
+        self.jobpack = JobPack.load(open(jobfile, 'rb'))
         self.jobobjs = dPickle.loads(self.jobpack.jobdata)
         self.master = master
         self.disco_port = disco_port
@@ -72,10 +73,10 @@ class Task(object):
         self.mode = mode
         self.taskid = taskid
         self.outputs = {}
-        self.uid = '%s:%s-%s-%x' % (mode,
-                                    taskid,
-                                    hexhash(str((time.time()))),
-                                    os.getpid())
+        self.uid = '{0}:{1}-{2}-{3}'.format(mode,
+                                            taskid,
+                                            hexhash(str((time.time())).encode()),
+                                            os.getpid())
 
     @property
     def jobpath(self):
@@ -83,7 +84,7 @@ class Task(object):
 
     @property
     def taskpath(self):
-        return os.path.join(hexhash(self.uid), self.uid)
+        return os.path.join(hexhash(self.uid.encode()), self.uid)
 
     def makedirs(self):
         from disco.fileutils import ensure_path

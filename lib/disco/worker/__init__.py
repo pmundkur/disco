@@ -56,6 +56,7 @@ using a standard :class:`Worker`:
 """
 import os, sys, time, traceback
 
+from disco.compat import basestring, force_utf8
 from disco.error import DataError
 from disco.fileutils import DiscoOutput, NonBlockingInput, Wait
 
@@ -63,16 +64,13 @@ class MessageWriter(object):
     def __init__(self, worker):
         self.worker = worker
 
-    @classmethod
-    def force_utf8(cls, string):
-        if isinstance(string, unicode):
-            return string.encode('utf-8', 'replace')
-        return string.decode('utf-8', 'replace').encode('utf-8')
-
     def write(self, string):
         string = string.strip()
         if string:
-            self.worker.send('MSG', self.force_utf8(string))
+            self.worker.send('MSG', force_utf8(string))
+
+    def flush(self):
+        pass
 
 class Worker(dict):
     """
@@ -235,8 +233,8 @@ class Worker(dict):
         from disco import __file__ as discopath
         from disco.fileutils import DiscoZipFile
         jobzip = DiscoZipFile()
-        jobzip.writepath(os.path.dirname(clxpath), exclude=('.pyc',))
-        jobzip.writepath(os.path.dirname(discopath), exclude=('.pyc',))
+        jobzip.writepath(os.path.dirname(clxpath), exclude=('.pyc', '__pycache__'))
+        jobzip.writepath(os.path.dirname(discopath), exclude=('.pyc', '__pycache__'))
         jobzip.writesource(job)
         jobzip.writesource(self)
         return jobzip
@@ -282,7 +280,7 @@ class Worker(dict):
         task.makedirs()
         if self.getitem('profile', job, jobargs):
             from cProfile import runctx
-            name = 'profile-%s' % task.uid
+            name = 'profile-{0}'.format(task.uid)
             path = task.path(name)
             runctx('self.run(task, job, **jobargs)', globals(), locals(), path)
             task.put(name, open(path).read())
@@ -328,21 +326,22 @@ class Worker(dict):
             job, jobargs = task.jobobjs
             job.worker.start(task, job, **jobargs)
             cls.send('DONE')
-        except (DataError, EnvironmentError, MemoryError), e:
+        except (DataError, EnvironmentError, MemoryError) as e:
             # check the number of open file descriptors (under proc), warn if close to max
             # http://stackoverflow.com/questions/899038/getting-the-highest-allocated-file-descriptor
             # also check for other known reasons for error, such as if disk is full
             cls.send('ERROR', traceback.format_exc())
             raise
-        except Exception, e:
-            cls.send('FATAL', MessageWriter.force_utf8(traceback.format_exc()))
+        except Exception as e:
+            cls.send('FATAL', force_utf8(traceback.format_exc()))
             raise
 
     @classmethod
     def send(cls, type, payload=''):
         from disco.json import dumps, loads
         body = dumps(payload)
-        sys.stderr.write('%s %d %s\n' % (type, len(body), body))
+        sys.stderr.write('{0} {1} {2}\n'.format(type, len(body), body))
+        sys.stderr.flush()
         spent, rtype = sys.stdin.t_read_until(' ')
         spent, rsize = sys.stdin.t_read_until(' ', spent=spent)
         spent, rbody = sys.stdin.t_read(int(rsize) + 1, spent=spent)
@@ -405,7 +404,7 @@ class IDedInput(tuple):
         return self.worker.send('INPUT_ERR', [self.id, list(tried)])
 
     def __str__(self):
-        return '%s' % [url for rid, url in self.replicas]
+        return '{0}'.format([url for rid, url in self.replicas])
 
 class ReplicaIter(object):
     def __init__(self, input):
@@ -422,6 +421,9 @@ class ReplicaIter(object):
             return replicas[repl_id]
         self.input.unavailable(self.used)
         raise StopIteration
+
+    def __next__(self):
+        return self.next()
 
 class InputIter(object):
     def __init__(self, input, task=None, open=None, start=0):
@@ -441,24 +443,27 @@ class InputIter(object):
 
     def next(self):
         try:
-            self.last, item = self.iter.next()
+            self.last, item = next(self.iter)
             return item
         except DataError:
             self.swap(traceback.format_exc())
             raise Wait(0)
 
+    def __next__(self):
+        return self.next()
+
     def swap(self, error=None):
         try:
             def skip(iter, N):
                 from itertools import dropwhile
-                return dropwhile(lambda (n, rec): n < N, enumerate(iter))
-            self.iter = skip(self.open(self.urls.next()), self.last + 1)
+                return dropwhile(lambda n_rec: n_rec[0] < N, enumerate(iter))
+            self.iter = skip(self.open(next(self.urls)), self.last + 1)
         except DataError:
             self.swap(traceback.format_exc())
         except StopIteration:
             if error:
                 raise DataError("Exhausted all available replicas, "
-                                "last error was:\n\n%s" % error, self.input)
+                                "last error was:\n\n{0}".format(error), self.input)
             raise DataError("Exhausted all available replicas", self.input)
 
 class Input(object):
@@ -485,7 +490,7 @@ class Input(object):
                 for item in iter:
                     yield item
                 iter = None
-            except Wait, w:
+            except Wait as w:
                 time.sleep(w.retry_after)
 
     def input_iter(self, input):
@@ -527,8 +532,8 @@ class Output(object):
 
         The underlying output file handle.
     """
-    def __init__(self, (path, type, partition), open=None):
-        self.path, self.type, self.partition = path, type, partition
+    def __init__(self, path_type_partition, open=None):
+        self.path, self.type, self.partition = path_type_partition
         self.open = open or DiscoOutput
         self.file = self.open(self.path)
 
@@ -556,7 +561,7 @@ class ParallelInput(Input):
             try:
                 for item in iter:
                     yield item
-            except Wait, w:
+            except Wait as w:
                 if not iters:
                     time.sleep(w.retry_after)
                 iters.insert(0, iter)
@@ -598,7 +603,7 @@ class MergedInput(ParallelInput):
         from disco.future import merge
         iters = [self.input_iter(input) for input in self.input]
         heads = [Wait] * len(iters)
-        return merge(*(self.couple(iters, heads, n) for n in xrange(len(iters))))
+        return merge(*(self.couple(iters, heads, n) for n in range(len(iters))))
 
 if __name__ == '__main__':
     Worker.main()

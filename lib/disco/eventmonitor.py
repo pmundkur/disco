@@ -30,7 +30,7 @@ class OutputStream(object):
             if self.handle.isatty():
                 curses.setupterm()
                 return curses.tigetnum('colors') > 2
-        except Exception, e:
+        except Exception as e:
             pass
 
     def write(self, *args, **kwargs):
@@ -125,7 +125,7 @@ class ANSIEventWriter(EventWriter):
 class JSONEventWriter(EventWriter):
     def write(self, status=None, timestamp=None, host=None, message=None):
         if timestamp:
-            print json.dumps([timestamp, host, message])
+            print(json.dumps([timestamp, host, message]))
 
 
 class EventMonitor(object):
