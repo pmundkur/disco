@@ -237,6 +237,8 @@ update(#state{task = Task,
                         exit_on_error(Type, S2)
                 end
             catch K:V ->
+                    error_logger:error_msg("worker_runtime failed (~p:~p) handling ~p: ~p",
+                                           [K, V, Request, erlang:get_stacktrace()]),
                     warning(io_lib:format("~p:~p", [K, V]), S1),
                     exit_on_error(error, S1)
             end;
