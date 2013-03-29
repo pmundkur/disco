@@ -35,8 +35,11 @@ class netloc(tuple):
     def port(self):
         return self[1]
 
-    def __nonzero__(host_port):
-        return bool(host_port[0])
+    def __nonzero__(self):
+        return self.__bool__()
+
+    def __bool__(self):
+        return bool(self[0])
 
     def __str__(host_port):
         host, port = host_port

@@ -2,7 +2,7 @@ import os
 from datetime import datetime
 
 from disco.test import TestCase
-from disco.util import flatten, iterify, urlsplit
+from disco.util import flatten, iterify, urlsplit, netloc
 
 def function(x):
     return x + 0
@@ -41,3 +41,6 @@ class UtilTestCase(TestCase):
                           ('tag', ('host', ''), 'tag'))
         self.assertEquals(urlsplit('tag://host:port/tag', ''),
                           ('tag', ('host', 'port'), 'tag'))
+
+    def test_netloc(self):
+        self.assertEquals(bool(netloc.parse('')), False)
